@@ -27,6 +27,9 @@
             font-size: 1.5rem;
             font-weight: bold;
             background-color: #1e1e1e;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
         
         .camera-container {
@@ -41,7 +44,7 @@
         #videoElement {
             width: 100%;
             height: 100%;
-            object-fit: contain; /* Changed from cover to contain */
+            object-fit: contain;
             background-color: #000;
         }
         
@@ -123,10 +126,82 @@
         .message.show {
             opacity: 1;
         }
+        
+        .settings-button {
+            background: none;
+            border: none;
+            color: white;
+            font-size: 24px;
+            cursor: pointer;
+            padding: 5px;
+        }
+        
+        .settings-menu {
+            position: absolute;
+            top: 60px;
+            right: 10px;
+            background-color: #2a2a2a;
+            border-radius: 8px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+            padding: 10px;
+            z-index: 100;
+            min-width: 200px;
+            display: none;
+        }
+        
+        .settings-menu.show {
+            display: block;
+        }
+        
+        .settings-menu h3 {
+            margin-bottom: 10px;
+            font-size: 16px;
+        }
+        
+        .settings-menu select {
+            width: 100%;
+            padding: 8px;
+            background-color: #3a3a3a;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            margin-bottom: 10px;
+        }
+        
+        .settings-menu button {
+            width: 100%;
+            padding: 8px;
+            background-color: #0a84ff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        
+        .no-camera {
+            text-align: center;
+            padding: 20px;
+            font-size: 16px;
+            line-height: 1.5;
+        }
+        
+        .no-camera button {
+            margin-top: 15px;
+            padding: 10px 20px;
+            background-color: #0a84ff;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
     </style>
 </head>
 <body>
-    <div class="header">Private Log</div>
+    <div class="header">
+        <div></div>
+        <div>Private Log</div>
+        <button class="settings-button" id="settingsButton">⚙️</button>
+    </div>
     
     <div class="camera-container">
         <video id="videoElement" autoplay muted playsinline></video>
@@ -134,13 +209,27 @@
             <div class="overlay-title">Private Log</div>
             <div class="overlay-time" id="currentTime"></div>
         </div>
+        
+        <div id="noCameraMessage" class="no-camera" style="display: none;">
+            <p>No camera detected or permission denied.</p>
+            <p>Please ensure your camera is connected and you've granted permission.</p>
+            <button id="retryButton">Retry Camera Access</button>
+        </div>
     </div>
     
     <div class="controls">
-        <button id="recordButton"></button>
+        <button id="recordButton" disabled></button>
     </div>
     
     <div class="message" id="message"></div>
+    
+    <div class="settings-menu" id="settingsMenu">
+        <h3>Camera Settings</h3>
+        <select id="cameraSelect">
+            <option value="">Loading cameras...</option>
+        </select>
+        <button id="applyCameraButton">Apply</button>
+    </div>
     
     <script>
         document.addEventListener('DOMContentLoaded', async () => {
@@ -148,12 +237,19 @@
             const recordButton = document.getElementById('recordButton');
             const timeDisplay = document.getElementById('currentTime');
             const messageElement = document.getElementById('message');
+            const settingsButton = document.getElementById('settingsButton');
+            const settingsMenu = document.getElementById('settingsMenu');
+            const cameraSelect = document.getElementById('cameraSelect');
+            const applyCameraButton = document.getElementById('applyCameraButton');
+            const noCameraMessage = document.getElementById('noCameraMessage');
+            const retryButton = document.getElementById('retryButton');
             
             let stream = null;
             let mediaRecorder = null;
             let recordedChunks = [];
             let isRecording = false;
             let timeInterval = null;
+            let devices = [];
             
             // Function to update time display
             function updateTime() {
@@ -183,29 +279,92 @@
                 }, duration);
             }
             
-            // Function to initialize camera
-            async function initCamera() {
+            // Function to get available video devices
+            async function getVideoDevices() {
                 try {
-                    // Try to get the front camera on mobile devices with portrait orientation
-                    const constraints = {
+                    const devices = await navigator.mediaDevices.enumerateDevices();
+                    return devices.filter(device => device.kind === 'videoinput');
+                } catch (err) {
+                    console.error("Error getting video devices:", err);
+                    return [];
+                }
+            }
+            
+            // Function to populate camera select
+            async function populateCameraSelect() {
+                cameraSelect.innerHTML = '';
+                
+                devices = await getVideoDevices();
+                
+                if (devices.length === 0) {
+                    const option = document.createElement('option');
+                    option.value = '';
+                    option.textContent = 'No cameras found';
+                    cameraSelect.appendChild(option);
+                    return;
+                }
+                
+                devices.forEach((device, index) => {
+                    const option = document.createElement('option');
+                    option.value = device.deviceId;
+                    option.textContent = device.label || `Camera ${index + 1}`;
+                    cameraSelect.appendChild(option);
+                });
+            }
+            
+            // Function to initialize camera
+            async function initCamera(deviceId = null) {
+                try {
+                    // Stop any existing stream
+                    if (stream) {
+                        stream.getTracks().forEach(track => track.stop());
+                    }
+                    
+                    // Create constraints based on device selection
+                    let constraints = {
+                        audio: true,
                         video: {
-                            facingMode: { ideal: "user" },
                             width: { ideal: 1080 },
-                            height: { ideal: 1920 } // Prioritize portrait aspect ratio
-                        },
-                        audio: true
+                            height: { ideal: 1920 }
+                        }
                     };
                     
+                    // If a specific device is selected, use it
+                    if (deviceId) {
+                        constraints.video.deviceId = { exact: deviceId };
+                    } else {
+                        // Otherwise prefer front camera on mobile
+                        constraints.video.facingMode = { ideal: "user" };
+                    }
+                    
+                    // Get media stream
                     stream = await navigator.mediaDevices.getUserMedia(constraints);
                     videoElement.srcObject = stream;
                     
-                    // Enable the record button once camera is ready
+                    // If we don't have device labels, request them again (permission might have been granted)
+                    if (devices.some(device => !device.label)) {
+                        await populateCameraSelect();
+                    }
+                    
+                    // Hide no camera message if it was showing
+                    noCameraMessage.style.display = 'none';
+                    videoElement.style.display = 'block';
+                    
+                    // Enable the record button
                     recordButton.disabled = false;
                     
                     showMessage("Camera ready");
+                    
+                    return true;
                 } catch (err) {
                     console.error("Error accessing camera:", err);
-                    showMessage("Error accessing camera. Please check permissions.", 5000);
+                    showMessage("Error accessing camera", 5000);
+                    
+                    // Show no camera message
+                    noCameraMessage.style.display = 'block';
+                    videoElement.style.display = 'none';
+                    
+                    return false;
                 }
             }
             
@@ -216,7 +375,7 @@
                 // Create a canvas to draw video with overlaid text
                 const canvas = document.createElement('canvas');
                 
-                // Set canvas dimensions to match video dimensions (maintaining aspect ratio)
+                // Set canvas dimensions to match video dimensions
                 const videoWidth = videoElement.videoWidth;
                 const videoHeight = videoElement.videoHeight;
                 canvas.width = videoWidth;
@@ -233,9 +392,19 @@
                 }
                 
                 // Set up media recorder with canvas stream
-                mediaRecorder = new MediaRecorder(canvasStream, {
-                    mimeType: 'video/webm;codecs=vp9,opus'
-                });
+                const mimeType = 'video/webm;codecs=vp9,opus';
+                
+                try {
+                    mediaRecorder = new MediaRecorder(canvasStream, { mimeType });
+                } catch (e) {
+                    // Fallback if vp9 is not supported
+                    try {
+                        mediaRecorder = new MediaRecorder(canvasStream, { mimeType: 'video/webm' });
+                    } catch (e2) {
+                        showMessage("Recording not supported in this browser", 5000);
+                        return;
+                    }
+                }
                 
                 mediaRecorder.ondataavailable = (event) => {
                     if (event.data.size > 0) {
@@ -300,45 +469,4 @@
                 // Create a timestamp for the filename
                 const now = new Date();
                 const timestamp = now.toISOString().replace(/[:.]/g, '-');
-                const filename = `private-log-${timestamp}.webm`;
-                
-                // Create download link
-                const url = URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.style.display = 'none';
-                a.href = url;
-                a.download = filename;
-                document.body.appendChild(a);
-                a.click();
-                
-                // Clean up
-                setTimeout(() => {
-                    document.body.removeChild(a);
-                    window.URL.revokeObjectURL(url);
-                    showMessage("Video saved to downloads");
-                }, 100);
-            }
-            
-            // Initialize camera when page loads
-            initCamera();
-            
-            // Set up record button click handler
-            recordButton.addEventListener('click', () => {
-                if (!isRecording) {
-                    startRecording();
-                } else {
-                    stopRecording();
-                }
-            });
-            
-            // Handle page visibility changes to stop recording when page is hidden
-            document.addEventListener('visibilitychange', () => {
-                if (document.visibilityState === 'hidden' && isRecording) {
-                    stopRecording();
-                    showMessage("Recording stopped due to app switching");
-                }
-            });
-        });
-    </script>
-</body>
-</html>
+                const filename = `private-log-${timestamp}.webm
